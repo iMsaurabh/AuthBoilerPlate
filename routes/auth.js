@@ -4,6 +4,9 @@ const bcrypt = require('bcrypt');
 const pool = require('../db');
 const { generateAccessToken, generateRefreshToken } = require('../utils/jwt');
 
+// Add these imports at the top if not already there
+const crypto = require('crypto');
+
 // SIGNUP
 router.post('/signup', async (req, res) => {
     const { email, password, name } = req.body;
@@ -195,6 +198,101 @@ router.post('/logout', async (req, res) => {
         // Even if database fails, still return success
         // Client-side should clear tokens regardless
         res.json({ message: 'Logged out successfully' });
+    }
+});
+
+
+
+// REQUEST PASSWORD RESET
+router.post('/forgot-password', async (req, res) => {
+    const { email } = req.body;
+
+    if (!email) {
+        return res.status(400).json({ error: 'Email is required' });
+    }
+
+    try {
+        // Find user
+        const userResult = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+
+        // Always return success (don't reveal if email exists)
+        if (userResult.rows.length === 0) {
+            return res.json({ message: 'If email exists, reset instructions sent' });
+        }
+
+        const user = userResult.rows[0];
+
+        // Generate reset token
+        const resetToken = crypto.randomBytes(32).toString('hex');
+        const resetExpires = new Date();
+        resetExpires.setHours(resetExpires.getHours() + 1); // 1 hour expiry
+
+        // Save reset token
+        await pool.query(`
+            UPDATE users 
+            SET reset_token = $1, reset_token_expires = $2 
+            WHERE id = $3
+        `, [resetToken, resetExpires, user.id]);
+
+        // In real app, send email here
+        console.log('Password reset token for', email, ':', resetToken);
+        console.log('Reset URL: http://localhost:3000/reset-password?token=' + resetToken);
+
+        res.json({
+            message: 'If email exists, reset instructions sent',
+            // For testing only - remove in production
+            resetToken: resetToken
+        });
+
+    } catch (error) {
+        console.error('Forgot password error:', error);
+        res.status(500).json({ error: 'Failed to process request' });
+    }
+});
+
+// RESET PASSWORD
+router.post('/reset-password', async (req, res) => {
+    const { token, newPassword } = req.body;
+
+    if (!token || !newPassword) {
+        return res.status(400).json({ error: 'Token and new password are required' });
+    }
+
+    if (newPassword.length < 6) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    try {
+        // Find user with valid reset token
+        const userResult = await pool.query(`
+            SELECT * FROM users 
+            WHERE reset_token = $1 AND reset_token_expires > NOW()
+        `, [token]);
+
+        if (userResult.rows.length === 0) {
+            return res.status(400).json({ error: 'Invalid or expired reset token' });
+        }
+
+        const user = userResult.rows[0];
+
+        // Hash new password
+        const passwordHash = await bcrypt.hash(newPassword, 10);
+
+        // Update password and clear reset token
+        await pool.query(`
+            UPDATE users 
+            SET password_hash = $1, reset_token = NULL, reset_token_expires = NULL 
+            WHERE id = $2
+        `, [passwordHash, user.id]);
+
+        // Invalidate all refresh tokens (force re-login on all devices)
+        await pool.query('DELETE FROM refresh_tokens WHERE user_id = $1', [user.id]);
+
+        res.json({ message: 'Password reset successfully' });
+
+    } catch (error) {
+        console.error('Reset password error:', error);
+        res.status(500).json({ error: 'Failed to reset password' });
     }
 });
 

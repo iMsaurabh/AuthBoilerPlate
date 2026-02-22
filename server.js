@@ -12,6 +12,7 @@ app.use(express.json());
 
 // Import routes
 const authRoutes = require('./routes/auth');
+const organizationsRoutes = require('./routes/organizations');
 
 // Test route
 app.get('/', (req, res) => {
@@ -20,6 +21,7 @@ app.get('/', (req, res) => {
 
 // Use routes
 app.use('/api/auth', authRoutes);
+app.use('/api/organizations', organizationsRoutes);
 
 
 // Import middleware
